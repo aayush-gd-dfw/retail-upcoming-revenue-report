@@ -60,7 +60,7 @@ COL_SCHEDULED = 5
 GMAIL_ADDRESS    = "apatilglassdoctordfw@gmail.com"
 GMAIL_APP_PW     = "mird noii arle cnxb"
 GSPREAD_SHEET_ID = "1GA6ug2EfshOdv-NVULcItZ0K8IJtOpUe75GgClm1lpk"
-GDRIVE_SA_JSON   = r"sheetsautomation-476714-3aa48c47b97e.json"
+GDRIVE_SA_JSON   = os.getenv("GDRIVE_SA_JSON")
 
 # How far back to search in inbox (most recent match is used)
 # IMAP subject search is not as flexible as Gmail search; we just take the latest hit.
@@ -462,3 +462,4 @@ def main():
 if __name__ == "__main__":
 
     main()
+
