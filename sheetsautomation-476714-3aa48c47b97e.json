@@ -1,0 +1,13 @@
+{
+  "type": "service_account",
+  "project_id": "sheetsautomation-476714",
+  "private_key_id": "3aa48c47b97e26fffd96773bdaf88995aba3fbab",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCcs6YD4eUPdzyA\nEUH4GmbAM45NHcGLU53gRspi3lYHzF+lrRLuqhmzLUAbpM1t2Ys+O4q0KGqyBud5\n7x3VePN7d1ogoDPAORD0sk//Rq9BoGjn1sCmuhzknH0/DUHm5JXD7g8/oHmdmuNr\niUMKVYfz8ZOWz2oP5KHt3SLLvxEM2xYa4HBgRlEs1h4V6ivkK71WOYd2A8RiI7dp\nmKKcTdaF/PzJ8t5SfvmR7bkWOGCdVa9HiLt2hUA7i9QU1vv+80mUeLVx8AIAs2q4\njsGgBVr+K0Z1Nnib01h0QUJ3e5oCWx38OmXmA+suU1Rbv7dv3OsgLvI/nmXBmVG/\nOrI/W+evAgMBAAECggEALMmuFCL/ENYQLTyBgfOt1ZaGwCTWmkdqct1Y4DxTE4SG\n+/gFVsC4er1euuf2LUUF5uImyUpaAIs3ouLEwKyCzxG0aWnQkMrevUmv0rM1yUib\nY1Q+mQjN1EukAp777I39/lOu+Q0ZZYINKUHArxX2NzOfbvXWhzdeTvmrBdgU+/q5\n1MFlXfMY3yP6qLNA5w+48fSqFTbmRyTEt35y7MY9M37fj16OfkqvrW0P+Z7VDfDi\n8CV2gx97ORL/noGL2bZmMeyWYF5jgtN3J+DFGn72izB43Uv0tgTwGyTXSruECTW6\nYddxdw/fsjzyKvUiY9SpJaU0b+YJskGBw4QnK8M4fQKBgQDVUEzCijZN4jJYVqFM\nK5MRY3HbOuQWzAFI/QSHhKEVhZchQSEYJVTqENwm0SHktAnmQXqThCzy23db4qEA\nF+Xi3WCYFkx3vfddjfczhuLZRRGj/ihWSs+KyDPkWi8PgxVO49kbMzlIiP7WKLjz\nknP1c2dr0hpLGNHXoo4z4hm6AwKBgQC8Dzch7JtAujz5L8jF/u5ST+W3/+7YvSVS\n44TCVI0p1GWD30YtIXFK3U1+sI16hviOVMAMSmn7fWRq8jM36rYuTQ5ruV57uRwr\noAExZ/wN+gfttDy3oHVBvIV+NcBl1TS+o7H0u+qVtynOUoY5Uyfg6uyoHzZb8REr\nEBS6Vd+B5QKBgF+qs8JL2i7z00BrGcvffwW9Y8K+lqzisXDaiL1+bgAI+c6gNwdt\nNrgC97kw8dJwLEBn/WFLVh1U8CL1cN9p2F/2iOuslH7fY6FBmiwxwmtO3qp9wflx\nc8L6Jsuy5og+cb//z86zGm29gwzpFommlPrv1uI0SDaF2xaqgLwkGwWhAoGAUzLg\nD1AgN3itdQjg6EeqpBvY45iE0LqNgqhJmbfSZAkliDwFTf4XoylZGY1+ahDAcieo\nd0eMr8h/3picdEaQptdMY/g0hsQUZHB7VqJMbtqJG2671flVJuoCnR2mquayWQ0O\ns9lXJTlNc4wq+b2CTQ1h+dclM3PpRoXsxassIMkCgYEAlsgWc+biNcJawyTBWWeh\n3WfDkFqWMoiByuKmt7c1WIaLo55VUln+N8mMsnZ9WugI5LzMh+gUr/HBsf38pd2L\n2/7F13EwFpxUDQ8LhiTc3knYQizIIOWcsCWlbjDV0h6AgXmAjlxCelPtj8bZsvd+\nUWy2KIWnJlGK0hgE5zjJJf0=\n-----END PRIVATE KEY-----\n",
+  "client_email": "retail-metrics-bot@sheetsautomation-476714.iam.gserviceaccount.com",
+  "client_id": "108485354116642269937",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/retail-metrics-bot%40sheetsautomation-476714.iam.gserviceaccount.com",
+  "universe_domain": "googleapis.com"
+}
