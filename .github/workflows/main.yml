@@ -28,4 +28,14 @@ jobs:
 
       - name: Run script
         run: |
-          python upcoming_revenue.py
+              python - <<'PY'
+              import json, os
+              raw = os.environ["GDRIVE_SA_JSON"]
+              if raw.endswith(".json"):
+                j=json.load(open(raw,"r",encoding="utf-8"))
+              else:
+                j=json.loads(raw)
+              for k in ["client_email","private_key","token_uri","project_id"]:
+                print(k, "OK" if k in j and j[k] else "MISSING")
+              print("private_key startswith:", j["private_key"][:30])
+              PY
