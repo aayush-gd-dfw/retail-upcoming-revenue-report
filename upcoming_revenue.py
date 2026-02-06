@@ -1,77 +1,64 @@
 """
-Completed + Upcoming Revenue → Google Sheet Updater (IMAP + gspread)
-===================================================================
+Completed + Upcoming Revenue → SharePoint Excel Updater (Outlook Graph + openpyxl)
+===============================================================================
 
-Per your instructions:
-- ONLY re-use the Gmail read + Google Sheet update style from the code you shared:
-  - IMAP via app password
-  - read first .xlsx attachment
-  - gspread service account JSON
-  - upsert by matching Date column in the sheet
-- Your tab name is: "february"
-- Sheet columns:
-  Col1 Day (ignore)
-  Col2 Date (match key; do NOT update)
-  Col3 Expected Revenue (ignore)
-  Col4 Completed Revenue (update from Completed email)
-  Col5 Scheduled Revenue (update from Upcoming email)
-  Col6 Revenue Needed (ignore)
+Replaces:
+- Gmail IMAP + gspread (Google Sheets)
+With:
+- Microsoft Graph (Outlook mailbox) + SharePoint Excel file (download/edit/upload)
 
-Email subjects (contain-match):
+Logic preserved from your script:
+1) Upcoming: sum(Subtotal) by date for dates AFTER "today" date found in attachment,
+   overwrite Scheduled Revenue columns (global + BU scheduled).
+2) Completed: SUM all Jobs Subtotal values (ignore date) per your updated rule,
+   set Completed Revenue for file_date, clear Scheduled Revenue for that date
+   (global + BU scheduled cleared).
+
+Email subjects (contain-match via Graph $search):
 - "Completed Revenue for Retail Excel Dashboard"
 - "Upcoming Revenue for Retail Excel Dashboard"
 
-Logic:
-1) Upcoming: sum(Subtotal) by date for dates AFTER "today" date found in the attachment,
-   then overwrite Col5 (Scheduled Revenue) for matching dates in the sheet.
-2) Completed: sum(Subtotal) for "today" date found in the attachment,
-   set Col4 (Completed Revenue) and clear Col5 for that date.
+SharePoint Excel sheet:
+- TAB_NAME default = "February"
+- Base columns:
+  Col2 Date (match key; do NOT update)
+  Col4 Completed Revenue
+  Col5 Scheduled Revenue
+- BU_MAP controls BU date/completed/scheduled columns
 
-Environment variables required:
-- GMAIL_ADDRESS
-- GMAIL_APP_PW
-- GSPREAD_SHEET_ID
-- GDRIVE_SA_JSON  (either JSON string OR file path to service account json)
+Required env vars:
+- TENANT_ID
+- CLIENT_ID
+- CLIENT_SECRET
+- MAILBOX_UPN   (e.g., apatil@glassdoctordfw.com)
+- DRIVE_ID      (SharePoint drive id)
+- FILE_ITEM_ID  (Excel file item id)
 
 Install:
-pip install gspread google-auth openpyxl
+pip install msal requests openpyxl
 """
 
-import os, imaplib, email, io, json, re
-from email.header import decode_header, make_header
-from datetime import datetime, date, timezone, timedelta
+import os, io, re, base64
+from datetime import datetime, date, timezone
+from typing import Optional, Dict, Any, List, Tuple
 
-import gspread
-from google.oauth2.service_account import Credentials
+import requests
+from msal import ConfidentialClientApplication
 from openpyxl import load_workbook
 
 
 # -------------------- CONFIG --------------------
-TAB_NAME = "February"
+TAB_NAME = os.getenv("TAB_NAME", "February")
 
 SUBJECT_COMPLETED_PHRASE = "Completed Revenue for Retail Excel Dashboard"
 SUBJECT_UPCOMING_PHRASE  = "Upcoming Revenue for Retail Excel Dashboard"
 
-# Your sheet columns (1-based)
-COL_DATE      = 2
-COL_COMPLETED = 4
-COL_SCHEDULED = 5
-
-GMAIL_ADDRESS    = "apatilglassdoctordfw@gmail.com"
-GMAIL_APP_PW     = "mird noii arle cnxb"
-GSPREAD_SHEET_ID = "1GA6ug2EfshOdv-NVULcItZ0K8IJtOpUe75GgClm1lpk"
-GDRIVE_SA_JSON   = os.getenv("GDRIVE_SA_JSON")
-
-# How far back to search in inbox (most recent match is used)
-# IMAP subject search is not as flexible as Gmail search; we just take the latest hit.
-# ------------------------------------------------
-# Base columns (your original 6-col table) keep as-is
+# Base sheet columns (1-based)
 COL_DATE      = 2   # B
 COL_COMPLETED = 4   # D
 COL_SCHEDULED = 5   # E
 
 # -------------------- BU column mappings --------------------
-# Each BU has its own Date col, Completed col, Scheduled col in the same tab.
 BU_MAP = {
     "arlington":   {"date_col": 9,  "completed_col": 11, "scheduled_col": 12},  # I, K, L
     "carrollton":  {"date_col": 16, "completed_col": 18, "scheduled_col": 19},  # P, R, S
@@ -80,69 +67,31 @@ BU_MAP = {
     "denton":      {"date_col": 37, "completed_col": 39, "scheduled_col": 40},  # AK, AM, AN
 }
 
-# -------------------- Helpers (kept logic style) --------------------
+GRAPH = "https://graph.microsoft.com/v1.0"
 
-def connect_imap():
-    imap = imaplib.IMAP4_SSL("imap.gmail.com")
-    imap.login(GMAIL_ADDRESS, GMAIL_APP_PW)
-    imap.select("INBOX")
-    return imap
 
-def get_gspread_client():
-    raw = GDRIVE_SA_JSON
-    if not raw:
-        raise RuntimeError("Missing GDRIVE_SA_JSON env var (service account json string OR file path).")
-    if os.path.exists(raw):
-        with open(raw, "r", encoding="utf-8") as f:
-            sa_info = json.load(f)
-    else:
-        sa_info = json.loads(raw)
+# -------------------- Small helpers --------------------
+def must_env(name: str) -> str:
+    v = os.getenv(name)
+    if not v:
+        raise RuntimeError(f"Missing environment variable: {name}")
+    return v
 
-    scopes = [
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive",
-    ]
-    creds = Credentials.from_service_account_info(sa_info, scopes=scopes)
-    return gspread.authorize(creds)
+def parse_dt(dt_str: str) -> datetime:
+    if not dt_str:
+        return datetime(1970, 1, 1, tzinfo=timezone.utc)
+    if dt_str.endswith("Z"):
+        dt_str = dt_str.replace("Z", "+00:00")
+    return datetime.fromisoformat(dt_str)
 
-def open_ws():
-    gc = get_gspread_client()
-    sh = gc.open_by_key(GSPREAD_SHEET_ID)
-    return sh.worksheet(TAB_NAME)
+def col_letter(n: int) -> str:
+    s = ""
+    while n:
+        n, r = divmod(n - 1, 26)
+        s = chr(65 + r) + s
+    return s
 
-def search_latest_matching(imap, phrase):
-    typ, data = imap.search(None, f'(SUBJECT "{phrase}")')
-    if typ != "OK":
-        return None
-    ids = data[0].split()
-    return ids[-1] if ids else None
-
-def get_first_xlsx_attachment(imap, msg_id):
-    typ, data = imap.fetch(msg_id, "(RFC822)")
-    if typ != "OK":
-        return None, None
-
-    msg = email.message_from_bytes(data[0][1])
-    for part in msg.walk():
-        if part.get_content_disposition() == "attachment":
-            fname = part.get_filename()
-            if fname:
-                fname = str(make_header(decode_header(fname)))
-            if fname and fname.lower().endswith(".xlsx"):
-                content = part.get_payload(decode=True)
-                return fname, content
-
-    return None, None
-
-def read_xlsx_first_sheet(xlsx_bytes):
-    wb = load_workbook(io.BytesIO(xlsx_bytes), data_only=True)
-    ws = wb[wb.sheetnames[0]]
-    rows = []
-    for r in ws.iter_rows(values_only=True):
-        rows.append([("" if v is None else v) for v in r])
-    return rows
-
-def parse_money(val):
+def parse_money(val) -> float:
     if val is None:
         return 0.0
     if isinstance(val, (int, float)):
@@ -170,43 +119,153 @@ def try_parse_any_date(v):
 
 def find_col_idx(header, target_names_lower):
     h = [str(x).strip().lower() for x in header]
-    # exact match
     for i, name in enumerate(h):
         if name in target_names_lower:
             return i
-    # contains match
     for i, name in enumerate(h):
         for t in target_names_lower:
             if t in name:
                 return i
     return None
 
-def col_letter(n):
-    s = ""
-    while n:
-        n, r = divmod(n - 1, 26)
-        s = chr(65 + r) + s
-    return s
 
-def batch_update_cells(ws, updates):
-    if updates:
-        ws.batch_update(updates, value_input_option="USER_ENTERED")
+# -------------------- Auth (App-only) --------------------
+def get_token() -> str:
+    tenant_id = os.getenv("tenant_id")
+    client_id = os.getenv("client_id")
+    client_secret = os.getenv("client_secret")
+    
+    app = ConfidentialClientApplication(
+        client_id=client_id,
+        client_credential=client_secret,
+        authority=f"https://login.microsoftonline.com/{tenant_id}",
+    )
+    result = app.acquire_token_for_client(scopes=["https://graph.microsoft.com/.default"])
+    if "access_token" not in result:
+        raise RuntimeError(f"Token error: {result.get('error')} - {result.get('error_description')}")
+    return result["access_token"]
 
-def build_sheet_date_row_map(ws, date_col):
+def graph_get(token: str, url: str, params: Optional[dict] = None) -> Dict[str, Any]:
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "ConsistencyLevel": "eventual",  # required for $search
+    }
+    r = requests.get(url, headers=headers, params=params, timeout=60)
+    if not r.ok:
+        try:
+            print("Graph error payload:", r.json())
+        except Exception:
+            print("Graph error text:", r.text)
+        r.raise_for_status()
+    return r.json()
+
+def graph_get_bytes(token: str, url: str, params: Optional[dict] = None) -> bytes:
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "ConsistencyLevel": "eventual",
+    }
+    r = requests.get(url, headers=headers, params=params, timeout=120)
+    if not r.ok:
+        try:
+            print("Graph error payload:", r.json())
+        except Exception:
+            print("Graph error text:", r.text)
+        r.raise_for_status()
+    return r.content
+
+def graph_put_bytes(token: str, url: str, content: bytes, content_type: str) -> Dict[str, Any]:
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": content_type,
+    }
+    r = requests.put(url, headers=headers, data=content, timeout=180)
+    if not r.ok:
+        try:
+            print("Graph error payload:", r.json())
+        except Exception:
+            print("Graph error text:", r.text)
+        r.raise_for_status()
+    return r.json()
+
+
+# -------------------- Outlook: latest email + attachment --------------------
+def latest_message_for_subject(token: str, mailbox_upn: str, subject_phrase: str) -> Optional[Dict[str, Any]]:
     """
-    Reads a date column and returns {date: row_number}
+    Uses $search (contains-style) and sorts locally (since $search can't combine with $orderby).
     """
-    col_vals = ws.col_values(date_col)
-    mapping = {}
-    for i, v in enumerate(col_vals, start=1):
-        if i == 1:
-            continue
-        d = try_parse_any_date(v)
-        if d:
-            mapping[d] = i
-    return mapping
+    url = f"{GRAPH}/users/{mailbox_upn}/mailFolders/Inbox/messages"
+    params = {
+        "$select": "id,subject,receivedDateTime,from,hasAttachments",
+        "$top": "25",
+        "$search": f"\"{subject_phrase}\"",
+    }
+    data = graph_get(token, url, params=params)
+    msgs: List[Dict[str, Any]] = data.get("value", [])
 
-# -------------------- Filename date extraction (for Completed) --------------------
+    # Prefer subject contains phrase (case-insensitive)
+    phrase = subject_phrase.lower()
+    candidates = [m for m in msgs if phrase in (m.get("subject") or "").lower()]
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda m: parse_dt(m.get("receivedDateTime", "")), reverse=True)
+    return candidates[0]
+
+def get_first_xlsx_attachment_from_message(token: str, mailbox_upn: str, message_id: str) -> Tuple[Optional[str], Optional[bytes]]:
+    """
+    Returns (filename, bytes) for the first .xlsx attachment on the message.
+    Handles:
+    - contentBytes if present
+    - fallback to /$value download
+    """
+    # list attachments
+    url = f"{GRAPH}/users/{mailbox_upn}/messages/{message_id}/attachments"
+    data = graph_get(token, url, params={"$top": "50"})
+    atts = data.get("value", [])
+
+    # pick first .xlsx
+    for a in atts:
+        name = (a.get("name") or "")
+        if name.lower().endswith(".xlsx"):
+            # small attachments often include contentBytes
+            cb = a.get("contentBytes")
+            if cb:
+                return name, base64.b64decode(cb)
+
+            # else download raw
+            att_id = a.get("id")
+            if att_id:
+                raw_url = f"{GRAPH}/users/{mailbox_upn}/messages/{message_id}/attachments/{att_id}/$value"
+                b = graph_get_bytes(token, raw_url)
+                return name, b
+
+    return None, None
+
+
+# -------------------- SharePoint Excel: download/edit/upload --------------------
+def download_sharepoint_excel(token: str, drive_id: str, item_id: str) -> bytes:
+    url = f"{GRAPH}/drives/{drive_id}/items/{item_id}/content"
+    return graph_get_bytes(token, url)
+
+def upload_sharepoint_excel(token: str, drive_id: str, item_id: str, content: bytes) -> None:
+    url = f"{GRAPH}/drives/{drive_id}/items/{item_id}/content"
+    graph_put_bytes(
+        token,
+        url,
+        content,
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
+# -------------------- Attachment parsing (kept style) --------------------
+def read_xlsx_first_sheet_rows(xlsx_bytes: bytes) -> List[List[Any]]:
+    wb = load_workbook(io.BytesIO(xlsx_bytes), data_only=True)
+    ws = wb[wb.sheetnames[0]]
+    rows = []
+    for r in ws.iter_rows(values_only=True):
+        rows.append([("" if v is None else v) for v in r])
+    return rows
 
 def extract_date_from_filename(fname: str) -> date:
     if not fname:
@@ -226,12 +285,7 @@ def extract_date_from_filename(fname: str) -> date:
 
     return date(yyyy, mm, dd)
 
-# -------------------- Upcoming parsing (unchanged behavior + BU filter) --------------------
-
 def subtotal_by_date_from_rows_upcoming(rows):
-    """
-    Upcoming: sum Jobs Subtotal by Next Appt Start Date, treat "today_in_file" as min date in file.
-    """
     if not rows or len(rows) < 2:
         raise ValueError("Attachment sheet is empty or missing header/body.")
 
@@ -245,7 +299,6 @@ def subtotal_by_date_from_rows_upcoming(rows):
     if bu_col is None or date_col is None or sub_col is None:
         raise ValueError(f"Could not find required columns in Upcoming. Header: {header}")
 
-    # totals_by_bu_date = { bu: {date: sum} }
     totals_by_bu_date = {bu: {} for bu in BU_MAP.keys()}
     dates_seen = []
 
@@ -270,41 +323,87 @@ def subtotal_by_date_from_rows_upcoming(rows):
         raise ValueError("No valid dates found in Upcoming attachment.")
 
     today_in_file = min(dates_seen)
-    # round cents
     for bu in totals_by_bu_date:
         totals_by_bu_date[bu] = {k: round(v, 2) for k, v in totals_by_bu_date[bu].items()}
 
     return today_in_file, totals_by_bu_date
 
-def apply_upcoming(ws, today_in_file, totals_by_bu_date):
-    """
-    Updates:
-      - Global scheduled (Col5) based on overall totals_by_bu_date (summed across BUs) for dates > today_in_file
-      - BU scheduled columns per BU_MAP for dates > today_in_file
-    """
-    # Global Date->Row map (col B)
-    base_date_row = build_sheet_date_row_map(ws, COL_DATE)
+def completed_values_from_rows_by_bu_sum_jobs_subtotal(rows):
+    if not rows or len(rows) < 2:
+        raise ValueError("Attachment sheet is empty or missing header/body.")
 
-    # BU Date->Row maps (different date cols)
-    bu_date_row = {bu: build_sheet_date_row_map(ws, BU_MAP[bu]["date_col"]) for bu in BU_MAP}
+    header = rows[0]
+    body = rows[1:]
 
-    # 1) Global scheduled = sum across all BU totals for that date
-    global_totals = {}
+    bu_col  = find_col_idx(header, {"business unit"})
+    sub_col = find_col_idx(header, {"jobs subtotal", "subtotal"})
+
+    if bu_col is None or sub_col is None:
+        raise ValueError(f"Could not find required columns in Completed. Header: {header}")
+
+    global_sum = 0.0
+    bu_sum = {bu: 0.0 for bu in BU_MAP.keys()}
+
+    for r in body:
+        if len(r) <= max(bu_col, sub_col):
+            continue
+
+        v = r[sub_col]
+        if v in (None, "", " "):
+            continue
+
+        amt = parse_money(v)
+        global_sum += amt
+
+        bu_raw = str(r[bu_col]).strip().lower()
+        if bu_raw in bu_sum:
+            bu_sum[bu_raw] += amt
+
+    global_sum = round(global_sum, 2)
+    bu_sum = {bu: round(val, 2) for bu, val in bu_sum.items()}
+
+    return global_sum, bu_sum
+
+
+# -------------------- SharePoint workbook updates --------------------
+def build_sheet_date_row_map_xl(ws, date_col: int) -> Dict[date, int]:
+    """
+    Reads a date column and returns {date: row_number}
+    Assumes row 1 is header.
+    """
+    mapping = {}
+    max_row = ws.max_row
+    for row in range(2, max_row + 1):
+        v = ws.cell(row=row, column=date_col).value
+        d = try_parse_any_date(v)
+        if d:
+            mapping[d] = row
+    return mapping
+
+def apply_upcoming_to_workbook(wb, sheet_name: str, today_in_file: date, totals_by_bu_date: Dict[str, Dict[date, float]]) -> int:
+    ws = wb[sheet_name]
+
+    base_date_row = build_sheet_date_row_map_xl(ws, COL_DATE)
+    bu_date_row = {bu: build_sheet_date_row_map_xl(ws, BU_MAP[bu]["date_col"]) for bu in BU_MAP}
+
+    # global totals = sum across BU totals by date
+    global_totals: Dict[date, float] = {}
     for bu, dmap in totals_by_bu_date.items():
         for d, amt in dmap.items():
             global_totals[d] = global_totals.get(d, 0.0) + amt
     global_totals = {d: round(v, 2) for d, v in global_totals.items()}
 
-    updates = []
+    updated_cells = 0
 
-    # Global scheduled updates
+    # Global scheduled updates (Col5) for d > today_in_file
     for d, total in global_totals.items():
         if d <= today_in_file:
             continue
         row = base_date_row.get(d)
         if not row:
             continue
-        updates.append({"range": f"{col_letter(COL_SCHEDULED)}{row}", "values": [[total]]})
+        ws.cell(row=row, column=COL_SCHEDULED).value = total
+        updated_cells += 1
 
     # BU scheduled updates
     for bu, dmap in totals_by_bu_date.items():
@@ -316,150 +415,98 @@ def apply_upcoming(ws, today_in_file, totals_by_bu_date):
             row = row_map.get(d)
             if not row:
                 continue
-            updates.append({"range": f"{col_letter(sched_col)}{row}", "values": [[total]]})
+            ws.cell(row=row, column=sched_col).value = total
+            updated_cells += 1
 
-    batch_update_cells(ws, updates)
-    return len(updates)
+    return updated_cells
 
-# -------------------- Completed parsing (YOUR RULE + BU filter) --------------------
+def apply_completed_to_workbook(wb, sheet_name: str, file_date: date, global_completed_value: float, bu_completed_values: Dict[str, float]) -> int:
+    ws = wb[sheet_name]
 
-def completed_values_from_rows_by_bu_last_jobs_subtotal(rows):
-    """
-    Completed:
-      - For each BU in BU_MAP, take the last non-empty Jobs Subtotal value within that BU.
-      - Also compute global completed = last non-empty Jobs Subtotal overall (kept simple).
-    """
-    if not rows or len(rows) < 2:
-        raise ValueError("Attachment sheet is empty or missing header/body.")
-
-    header = rows[0]
-    body = rows[1:]
-
-    bu_col  = find_col_idx(header, {"business unit"})
-    sub_col = find_col_idx(header, {"jobs subtotal", "subtotal"})
-
-    if bu_col is None or sub_col is None:
-        raise ValueError(f'Could not find required columns in Completed. Header: {header}')
-
-    # global last non-empty
-    global_last = 0.0
-    for r in reversed(body):
-        if len(r) <= sub_col:
-            continue
-        v = r[sub_col]
-        if v not in (None, "", " "):
-            global_last = round(parse_money(v), 2)
-            break
-
-    # BU last non-empty (scan from bottom, first match per BU wins)
-    bu_last = {bu: None for bu in BU_MAP.keys()}
-    remaining = set(BU_MAP.keys())
-
-    for r in reversed(body):
-        if not remaining:
-            break
-        if len(r) <= max(bu_col, sub_col):
-            continue
-
-        bu_raw = str(r[bu_col]).strip().lower()
-        if bu_raw not in remaining:
-            continue
-
-        v = r[sub_col]
-        if v in (None, "", " "):
-            continue
-
-        bu_last[bu_raw] = round(parse_money(v), 2)
-        remaining.remove(bu_raw)
-
-    # fill missing with 0.0
-    for bu in bu_last:
-        if bu_last[bu] is None:
-            bu_last[bu] = 0.0
-
-    return global_last, bu_last
-
-def apply_completed_filename_date(ws, file_date, global_completed_value, bu_completed_values):
-    """
-    Updates:
-      - Global completed (Col4) for file_date in base Date col (B)
-      - Clears global scheduled (Col5) for file_date
-      - Updates BU completed columns per BU_MAP for file_date based on BU date cols
-      - Clears BU scheduled columns for that date too (same rule as global)
-    """
-    updates = []
+    updates = 0
 
     # Base row map
-    base_date_row = build_sheet_date_row_map(ws, COL_DATE)
+    base_date_row = build_sheet_date_row_map_xl(ws, COL_DATE)
     base_row = base_date_row.get(file_date)
     if base_row:
-        updates.append({"range": f"{col_letter(COL_COMPLETED)}{base_row}", "values": [[global_completed_value]]})
-        updates.append({"range": f"{col_letter(COL_SCHEDULED)}{base_row}", "values": [[""]]})
+        ws.cell(row=base_row, column=COL_COMPLETED).value = global_completed_value
+        ws.cell(row=base_row, column=COL_SCHEDULED).value = ""  # clear scheduled
+        updates += 2
 
     # BU-specific rows
     for bu, cols in BU_MAP.items():
-        row_map = build_sheet_date_row_map(ws, cols["date_col"])
+        row_map = build_sheet_date_row_map_xl(ws, cols["date_col"])
         row = row_map.get(file_date)
         if not row:
             continue
+        ws.cell(row=row, column=cols["completed_col"]).value = bu_completed_values.get(bu, 0.0)
+        ws.cell(row=row, column=cols["scheduled_col"]).value = ""  # clear scheduled
+        updates += 2
 
-        updates.append({"range": f"{col_letter(cols['completed_col'])}{row}", "values": [[bu_completed_values.get(bu, 0.0)]]})
-        updates.append({"range": f"{col_letter(cols['scheduled_col'])}{row}", "values": [[""]]})
+    return updates
 
-    batch_update_cells(ws, updates)
-    return len(updates)
 
 # -------------------- Main --------------------
-
 def main():
-    if not all([GMAIL_ADDRESS, GMAIL_APP_PW, GSPREAD_SHEET_ID, GDRIVE_SA_JSON]):
-        raise RuntimeError("Missing env vars: GMAIL_ADDRESS, GMAIL_APP_PW, GSPREAD_SHEET_ID, GDRIVE_SA_JSON")
+    token = get_token()
 
-    imap = connect_imap()
-    try:
-        ws = open_ws()
+    mailbox_upn = "apatil@glassdoctordfw.com"  # apatil@glassdoctordfw.com
+    drive_id = os.getenv("drive_id")
+    file_item_id = os.getenv("file_item_id")
 
-        # 1) Upcoming (now also writes BU scheduled cols)
-        up_id = search_latest_matching(imap, SUBJECT_UPCOMING_PHRASE)
-        if up_id:
-            up_fname, up_content = get_first_xlsx_attachment(imap, up_id)
-            if up_content:
-                up_rows = read_xlsx_first_sheet(up_content)
-                up_today, totals_by_bu_date = subtotal_by_date_from_rows_upcoming(up_rows)
-                n = apply_upcoming(ws, up_today, totals_by_bu_date)
-                print(f"[Upcoming] {up_fname} | file_today={up_today} | total updated cells={n}")
-            else:
-                print("[Upcoming] Email found but no .xlsx attachment.")
+    # 1) Get latest messages
+    up_msg = latest_message_for_subject(token, mailbox_upn, SUBJECT_UPCOMING_PHRASE)
+    c_msg  = latest_message_for_subject(token, mailbox_upn, SUBJECT_COMPLETED_PHRASE)
+
+    if not up_msg and not c_msg:
+        print("No matching emails found for Upcoming or Completed.")
+        return
+
+    # 2) Download the SharePoint workbook once
+    xls_bytes = download_sharepoint_excel(token, drive_id, file_item_id)
+    wb = load_workbook(io.BytesIO(xls_bytes))
+
+    if TAB_NAME not in wb.sheetnames:
+        raise RuntimeError(f"Tab '{TAB_NAME}' not found in workbook. Found: {wb.sheetnames}")
+
+    # 3) Upcoming: attachment -> parse -> apply
+    if up_msg:
+        up_id = up_msg["id"]
+        up_fname, up_content = get_first_xlsx_attachment_from_message(token, mailbox_upn, up_id)
+        if up_content:
+            up_rows = read_xlsx_first_sheet_rows(up_content)
+            up_today, totals_by_bu_date = subtotal_by_date_from_rows_upcoming(up_rows)
+            n = apply_upcoming_to_workbook(wb, TAB_NAME, up_today, totals_by_bu_date)
+            print(f"[Upcoming] {up_fname} | file_today={up_today} | updated cells={n}")
         else:
-            print("[Upcoming] No matching email found.")
+            print("[Upcoming] Email found but no .xlsx attachment.")
+    else:
+        print("[Upcoming] No matching email found.")
 
-        # 2) Completed (date from filename, value from last Jobs Subtotal; also writes BU completed cols)
-        c_id = search_latest_matching(imap, SUBJECT_COMPLETED_PHRASE)
-        if c_id:
-            c_fname, c_content = get_first_xlsx_attachment(imap, c_id)
-            if c_content:
-                c_rows = read_xlsx_first_sheet(c_content)
-                file_date = extract_date_from_filename(c_fname)
+    # 4) Completed: attachment -> parse -> apply
+    if c_msg:
+        c_id = c_msg["id"]
+        c_fname, c_content = get_first_xlsx_attachment_from_message(token, mailbox_upn, c_id)
+        if c_content:
+            c_rows = read_xlsx_first_sheet_rows(c_content)
+            file_date = extract_date_from_filename(c_fname)
 
-                global_last, bu_last = completed_values_from_rows_by_bu_last_jobs_subtotal(c_rows)
-                n = apply_completed_filename_date(ws, file_date, global_last, bu_last)
+            global_sum, bu_sum = completed_values_from_rows_by_bu_sum_jobs_subtotal(c_rows)
+            n = apply_completed_to_workbook(wb, TAB_NAME, file_date, global_sum, bu_sum)
 
-                print(f"[Completed] {c_fname} | file_date={file_date} | global_completed={global_last} | updated cells={n}")
-            else:
-                print("[Completed] Email found but no .xlsx attachment.")
+            print(f"[Completed] {c_fname} | file_date={file_date} | global_completed={global_sum} | updated cells={n}")
         else:
-            print("[Completed] No matching email found.")
+            print("[Completed] Email found but no .xlsx attachment.")
+    else:
+        print("[Completed] No matching email found.")
 
-        print("Done.")
+    # 5) Save workbook back to bytes and upload
+    out = io.BytesIO()
+    wb.save(out)
+    upload_sharepoint_excel(token, drive_id, file_item_id, out.getvalue())
 
-    finally:
-        try:
-            imap.close()
-        except Exception:
-            pass
-        imap.logout()
+    print("Done. Uploaded updated Excel back to SharePoint.")
+
 
 if __name__ == "__main__":
-
     main()
-
