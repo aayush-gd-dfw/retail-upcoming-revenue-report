@@ -29,5 +29,10 @@ jobs:
       - name: Run script
         env:
           GDRIVE_SA_JSON: ${{ secrets.GDRIVE_SA_JSON }}
+          tenant_id: ${{ secrets.tenant_id }}
+          client_id: ${{ secrets.client_id }}
+          client_secret: ${{ secrets.client_secret }}
+          drive_id: ${{ secrets.drive_id }}
+          file_item_id: ${{ secrets.file_item_id }}
         run: |
           python upcoming_revenue.py
