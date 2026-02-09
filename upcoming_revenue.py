@@ -429,7 +429,7 @@ def apply_completed_to_workbook(wb, sheet_name: str, file_date: date, global_com
     base_date_row = build_sheet_date_row_map_xl(ws, COL_DATE)
     base_row = base_date_row.get(file_date)
     if base_row:
-        ws.cell(row=base_row, column=COL_COMPLETED).value = global_completed_value
+        ws.cell(row=base_row, column=COL_COMPLETED).value = global_completed_value/2
         ws.cell(row=base_row, column=COL_SCHEDULED).value = ""  # clear scheduled
         updates += 2
 
@@ -510,3 +510,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
