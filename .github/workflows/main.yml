@@ -1,4 +1,4 @@
-name: Run upcoming_revenue.py on Dallas schedule
+name: Run upcoming_revenue.py and march.py on Dallas schedule
 
 on:
   schedule:
@@ -10,8 +10,9 @@ on:
   workflow_dispatch: {}
 
 jobs:
-  run-script:
+  run-scripts:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -26,7 +27,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run script
+      - name: Run upcoming_revenue.py
         env:
           GDRIVE_SA_JSON: ${{ secrets.GDRIVE_SA_JSON }}
           tenant_id: ${{ secrets.tenant_id }}
@@ -36,3 +37,14 @@ jobs:
           file_item_id: ${{ secrets.file_item_id }}
         run: |
           python upcoming_revenue.py
+
+      - name: Run march.py
+        env:
+          GDRIVE_SA_JSON: ${{ secrets.GDRIVE_SA_JSON }}
+          tenant_id: ${{ secrets.tenant_id }}
+          client_id: ${{ secrets.client_id }}
+          client_secret: ${{ secrets.client_secret }}
+          drive_id: ${{ secrets.drive_id }}
+          file_item_id: ${{ secrets.file_item_id }}
+        run: |
+          python march.py
