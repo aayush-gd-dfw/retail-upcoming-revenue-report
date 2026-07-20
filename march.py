@@ -48,7 +48,7 @@ from openpyxl import load_workbook
 
 
 # -------------------- CONFIG --------------------
-TAB_NAME = os.getenv("TAB_NAME", "June")
+TAB_NAME = os.getenv("TAB_NAME", "August")
 
 SUBJECT_COMPLETED_PHRASE = "Completed Revenue for Retail Excel Dashboard"
 SUBJECT_UPCOMING_PHRASE  = "Upcoming Revenue for Retail Excel Dashboard"
